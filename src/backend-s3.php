@@ -25,11 +25,12 @@ class WPRO_Backend_S3 {
 		wpro()->options->register('wpro-aws-key');
 		wpro()->options->register('wpro-aws-secret');
 		wpro()->options->register('wpro-aws-bucket');
-		//wpro()->options->register('wpro-aws-cloudfront'); Cloudfront support should be as a CDN.
 		wpro()->options->register('wpro-aws-virthost');
 		wpro()->options->register('wpro-aws-endpoint');
 		wpro()->options->register('wpro-aws-ssl');
+		wpro()->options->register('wpro-aws-cloudfront');
 
+		add_filter('wpro_backend_file_exists', array($this, 'file_exists'), 10, 2);
 		add_filter('wpro_backend_store_file', array($this, 'store_file'));
 		add_filter('wpro_backend_retrieval_baseurl', array($this, 'url'));
 
@@ -92,6 +93,12 @@ class WPRO_Backend_S3 {
 						</p>
 					</td>
 				</tr>
+				<tr valign="top">
+					<th scope="row">CloudFront URL</th>
+					<td>
+						<input type="text" name="wpro-aws-cloudfront" value="<?php echo(wpro()->options->get_option('wpro-aws-cloudfront')); ?>" />
+					</td>
+				</tr>
 			</table>
 		<?php
 		return $log->logreturn(true);
@@ -116,6 +123,15 @@ class WPRO_Backend_S3 {
 		return $log->logreturn(true);
 	}
 
+	function file_exists($exists, $url) {
+		$log = wpro()->debug->logblock('WPRO_Backend_S3::file_exists($exists, $url = "' . $url . '")');
+		$bucket = wpro()->options->get_option('wpro-aws-bucket');
+		$path = ltrim(parse_url($url, PHP_URL_PATH), '/');
+		$log->log('$path = ' . var_export($path, true));
+
+		return $log->logreturn(client()->getObjectInfo($bucket, $path, false));
+	}
+
 	function store_file($data) {
 		$log = wpro()->debug->logblock('WPRO_Backend_S3::store_file($data)');
 		$log->log('$data = ' . var_export($data, true));
@@ -129,78 +145,14 @@ class WPRO_Backend_S3 {
 			return $log->logreturn(false);
 		}
 
-		$fin = fopen($file, 'r');
-		if (!$fin) {
-			$log->log('Error: Can not open ' . $file . ' for reading.');
+		$response = client()->putObjectFile($file, wpro()->options->get_option('wpro-aws-bucket'), $url, S3::ACL_PUBLIC_READ);
+
+		if ($response) {
+			return $log->logreturn($data);
+		} else {
 			return $log->logreturn(false);
 		}
-
-		$fout = fsockopen(wpro()->options->get('wpro-aws-endpoint'), 80, $errno, $errstr, 30);
-		if (!$fout) {
-			$log->log('Error: Can not open connection to S3 endpoint.');
-			return $log->logreturn(false);
-		}
-		$datetime = gmdate('r');
-		$string2sign = $this->string_to_sign_at_upload($mime, $datetime, $url);
-
-		$host = wpro()->options->get('wpro-aws-bucket');
-		if (!wpro()->options->get_option('wpro-aws-virthost')) {
-			$host .= '.' . wpro()->options->get('wpro-aws-endpoint');
-		}
-
-		$query = "PUT /" . $url . " HTTP/1.1\n";
-		$query .= "Host: " . $host . "\n";
-		$query .= "x-amz-acl: public-read\n";
-		$query .= "Connection: keep-alive\n";
-		$query .= "Content-Type: " . $mime . "\n";
-		$query .= "Content-Length: " . filesize($file) . "\n";
-		$query .= "Date: " . $datetime . "\n";
-		$query .= "Authorization: AWS " . wpro()->options->get_option('wpro-aws-key') . ":" . $this->amazon_hmac($string2sign) . "\n\n";
-
-		$log->log('$query = "' . $query . '";');
-
-		fwrite($fout, $query);
-		while (feof($fin) === false) fwrite($fout, fread($fin, 8192));
-		fclose($fin);
-
-		// Get the amazon response:
-		$response = '';
-		while (!feof($fout)) {
-			$response .= fgets($fout, 256);
-			if (strpos($response, "\r\n\r\n") !== false) { // Header fully returned.
-				if (strpos($response, 'Content-Length: 0') !== false) break; // Return if Content-Length: 0 (and header is fully returned)
-				if (substr($response, -7) == "\r\n0\r\n\r\n") break; // Keep-alive responses does not return EOF, they end with this string.
-			}
-		}
-
-		fclose($fout);
-
-		$log->log('S3 response: ' . $response);
-
-		if (strpos($response, '<Error>') !== false) {
-			return $log->logreturn(false);
-		}
-
-		return $log->logreturn($data);
 	}
-
-	function string_to_sign_at_upload($mime, $datetime, $url) {
-		$log = wpro()->debug->logblock('WPRO_Backend_S3::string_to_sign_at_upload($mime = "' . $mime . '", $datetime = "' . $datetime . '", $url = "' . $url . '")');
-		$url = wpro()->url->relativePath($url);
-		$string = "PUT\n\n" . $mime . "\n" . $datetime . "\nx-amz-acl:public-read\n/" . wpro()->options->get('wpro-aws-bucket') . '/' . $url;
-		return $log->logreturn($string);
-	}
-
-	function amazon_hmac($string) {
-		$log = wpro()->debug->logblock('WPRO_Backend_S3::amazon_hmac()');
-
-		return $log->logreturn(base64_encode(extension_loaded('hash') ?
-		hash_hmac('sha1', $string, wpro()->options->get_option('wpro-aws-secret'), true) : pack('H*', sha1(
-		(str_pad($this->secret, 64, chr(0x00)) ^ (str_repeat(chr(0x5c), 64))) .
-		pack('H*', sha1((str_pad(wpro()->options->get_option('wpro-aws-secret'), 64, chr(0x00)) ^
-		(str_repeat(chr(0x36), 64))) . $string))))));
-	}
-
 
 	function deactivate() {
 		$log = wpro()->debug->logblock('WPRO_Backend_S3::deactivate()');
@@ -208,11 +160,12 @@ class WPRO_Backend_S3 {
 		wpro()->options->deregister('wpro-aws-key');
 		wpro()->options->deregister('wpro-aws-secret');
 		wpro()->options->deregister('wpro-aws-bucket');
-		//wpro()->options->deregister('wpro-aws-cloudfront');
 		wpro()->options->deregister('wpro-aws-virthost');
 		wpro()->options->deregister('wpro-aws-endpoint');
 		wpro()->options->deregister('wpro-aws-ssl');
+		wpro()->options->deregister('wpro-aws-cloudfront');
 
+		remove_filter('wpro_backend_file_exists', array($this, 'file_exists'));
 		remove_filter('wpro_backend_handle_upload', array($this, 'handle_upload'));
 		remove_filter('wpro_backend_retrieval_baseurl', array($this, 'url'));
 
@@ -221,13 +174,14 @@ class WPRO_Backend_S3 {
 
 	function url($value) {
 		$log = wpro()->debug->logblock('WPRO_Backend_S3::url()');
-
 		$protocol = 'http';
 		if (wpro()->options->get('wpro-aws-ssl')) {
 			$protocol = 'https';
 		}
 
-		if (wpro()->options->get_option('wpro-aws-virthost')) {
+		if (strlen($cloudfront = trim(wpro()->options->get_option('wpro-aws-cloudfront'), '/'))) {
+			$url = $protocol . '://' . $cloudfront . '/';
+		} else if (wpro()->options->get_option('wpro-aws-virthost')) {
 			$url = $protocol . '://' . wpro()->options->get('wpro-aws-bucket') . '/';
 		} else {
 			$url = $protocol . '://' . wpro()->options->get('wpro-aws-bucket') . '.' . wpro()->options->get('wpro-aws-endpoint') . '/';
@@ -239,8 +193,16 @@ class WPRO_Backend_S3 {
 
 		return $log->logreturn($url);
 	}
-
 }
+
+	function client() {
+		$log = wpro()->debug->logblock('WPRO_Backend_S3::client()');
+		$s3 = new S3(wpro()->options->get_option('wpro-aws-key'),
+			wpro()->options->get_option('wpro-aws-secret'),
+			wpro()->options->get('wpro-aws-ssl'),
+			wpro()->options->get('wpro-aws-endpoint'));
+		return $log->logreturn($s3);
+	}
 
 function wpro_setup_s3_backend() {
 	wpro()->backends->register('WPRO_Backend_S3'); // Name of the class.
