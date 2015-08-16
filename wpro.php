@@ -11,6 +11,8 @@ License: GPLv2
 
 if (!defined('ABSPATH')) exit();
 
+require __DIR__ . '/vendor/autoload.php';
+
 class WPRO_Core {
 
 	private static $instance;

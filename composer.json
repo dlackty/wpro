@@ -1,10 +1,13 @@
 {
-    "name": "alfreddatakillen/wpro",
-    "description": "Wordpress Read-Only",
-    "homepage": "http://github.com/alfreddatakillen/wpro",
-    "type": "wordpress-plugin",
-    "extra": {
-    },
+	"name": "alfreddatakillen/wpro",
+	"description": "Wordpress Read-Only",
+	"homepage": "http://github.com/alfreddatakillen/wpro",
+	"type": "wordpress-plugin",
+	"extra": {
+	},
+	"require":{
+		"tpyo/amazon-s3-php-class": "0.5.*"
+	},
 	"require-dev": {
 		"phpunit/phpunit": "*",
 		"wp-cli/wp-cli": "*",
